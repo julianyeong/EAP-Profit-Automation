@@ -209,80 +209,70 @@ def parse_date_range(start_date_str: str, end_date_str: str) -> Tuple[str, str]:
             raise ValueError("날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식을 사용하세요")
         raise
 
-def extract_completed_documents(driver, start_date: str, end_date: str, doc_keyword: str) -> List[Dict[str, Any]]:
+def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: str) -> List[Dict[str, Any]]:
     """
-    종결된 품의서에서 특정 키워드가 포함된 문서들을 추출합니다.
+    목록 페이지에서 특정 키워드가 포함된 문서들의 링크를 추출합니다.
     
     Args:
         driver: Selenium WebDriver 인스턴스
         start_date (str): 시작 날짜 (YYYY-MM-DD)
         end_date (str): 종료 날짜 (YYYY-MM-DD)
-        doc_keyword (str): 문서 제목에 포함될 키워드 ('매출' 또는 '매입')
+        doc_keyword (str): 문서 제목에 포함될 키워드 ('매출품의' 또는 '매입품의')
         
     Returns:
-        List[Dict[str, Any]]: 추출된 문서 데이터 리스트
+        List[Dict[str, Any]]: 추출된 문서 링크 리스트 (문서제목, 링크, 날짜 포함)
     """
     documents = []
     
     try:
-        logger.info(f"📄 '{doc_keyword}' 키워드 문서 추출 중...")
+        logger.info(f"📄 '{doc_keyword}' 키워드 문서 목록 추출 중...")
         
         # 페이지 소스 가져오기
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, 'html.parser')
         
-        # 품의서 목록 테이블 또는 리스트 찾기
-        # 실제 그룹웨어 구조에 맞게 수정 필요
-        table_selectors = [
-            "table.tbl-list",
-            "table.approval-list", 
-            ".document-list table",
-            ".list-table",
-            "table"
-        ]
-        
-        table = None
-        for selector in table_selectors:
-            table = soup.select_one(selector)
-            if table:
-                break
-        
-        if not table:
-            logger.warning("⚠️ 품의서 목록 테이블을 찾을 수 없습니다")
+        document_list_container = soup.select_one('ul.tableBody') 
+        # ------------------------------------------------------------------
+
+        if not document_list_container:
+            logger.warning("⚠️ 품의서 목록 컨테이너 (ul.tableBody)를 찾을 수 없습니다")
             return documents
-        
-        # 테이블 행들 추출
-        rows = table.find_all('tr')[1:]  # 헤더 제외
-        
+
+        # [핵심 수정 2: LI 행들 추출 및 cells 로직 제거] ---------------------
+        # 테이블 행들 추출 -> 목록 행들 추출 (LI 태그)
+        rows = document_list_container.find_all('li', recursive=False)  # 헤더 제외
+
         for row in rows:
             try:
-                cells = row.find_all(['td', 'th'])
-                if len(cells) < 4:  # 최소 필요한 컬럼 수
-                    continue
+                # ⚠️ 기존 cells = row.find_all(['td', 'th']) 및 len(cells) 검사는 제거됩니다.
                 
-                # 각 셀에서 데이터 추출 (실제 그룹웨어 구조에 맞게 수정)
-                document_data = {}
+                # 1. 문서 제목 및 링크 추출 (titDiv 클래스 내부)
+                title_element = row.select_one('.titDiv .title span')
                 
-                # 문서 제목 추출
-                title_cell = cells[1] if len(cells) > 1 else cells[0]
-                title_link = title_cell.find('a')
-                title = title_link.get_text(strip=True) if title_link else title_cell.get_text(strip=True)
+                if not title_element: continue 
                 
-                # 키워드 필터링
-                if doc_keyword not in title:
-                    continue
+                title = title_element.get_text(strip=True)
                 
-                # 상태 확인 (종결된 문서만)
-                status_cell = cells[2] if len(cells) > 2 else cells[1]
-                status = status_cell.get_text(strip=True)
+                # 문서번호/링크가 들어있는 infoDiv를 찾습니다.
+                # 문서번호를 포함하는 infoLink 요소가 곧 링크처럼 사용됨
+                link_text_element = row.select_one('.infoDiv .txt.infoLink:nth-of-type(3)')
+                
+                if not link_text_element: continue
+
+                link_href = link_text_element.get_text(strip=True) # 실제로는 품의번호 텍스트입니다.
+                
+                # 2. 기안일 추출 (dateText 클래스)
+                date_text_element = row.select_one('.dateText')
+                date_text = date_text_element.get_text(strip=True) if date_text_element else ""
+                
+                # 3. 상태 확인 (종결/완료된 문서만) - process 클래스 사용
+                status_element = row.select_one('.process .ellipsis2')
+                status = status_element.get_text(strip=True) if status_element else ""
+                
                 if '종결' not in status and '완료' not in status:
                     continue
                 
-                # 날짜 추출
-                date_cell = cells[3] if len(cells) > 3 else cells[2]
-                date_text = date_cell.get_text(strip=True)
-                
-                # 날짜 파싱 및 필터링
+                # [기존의 날짜 파싱 및 필터링 로직 유지] --------------------------------
                 try:
                     doc_date = parse_date_from_text(date_text)
                     if not is_date_in_range(doc_date, start_date, end_date):
@@ -290,33 +280,22 @@ def extract_completed_documents(driver, start_date: str, end_date: str, doc_keyw
                 except:
                     continue
                 
-                # 공급가액 추출 (금액이 포함된 셀 찾기)
-                amount = 0
-                for cell in cells:
-                    cell_text = cell.get_text(strip=True)
-                    amount_match = re.search(r'[\d,]+', cell_text.replace(',', ''))
-                    if amount_match:
-                        try:
-                            amount = int(amount_match.group().replace(',', ''))
-                            break
-                        except ValueError:
-                            continue
-                
-                if amount == 0:
+                # 4. 키워드 필터링 및 데이터 구조화 (금액 로직은 이미 제거되었다고 가정)
+                if doc_keyword not in title:
                     continue
                 
-                # 문서 타입 결정
-                doc_type = '매출' if '매출' in title else '매입'
-                
+                # 문서 타입 결정 (매출품의, 매입품의)
+                doc_type = '매출품의' if '매출품의' in title else '매입품의'
+
                 document_data = {
                     '날짜': doc_date.strftime('%Y-%m-%d'),
                     '문서제목': title,
-                    '구분': doc_type,
-                    '공급가액': amount
+                    '링크': link_href, # 문서번호가 포함된 텍스트
+                    '구분': doc_type
                 }
                 
                 documents.append(document_data)
-                logger.debug(f"✅ 문서 추출: {title} - {amount:,}원")
+                logger.debug(f"✅ 문서 링크 추출: {title} - {doc_date.strftime('%Y-%m-%d')}")
                 
             except Exception as e:
                 logger.warning(f"⚠️ 행 처리 중 오류: {e}")
@@ -325,9 +304,250 @@ def extract_completed_documents(driver, start_date: str, end_date: str, doc_keyw
         logger.info(f"✅ '{doc_keyword}' 키워드 문서 {len(documents)}건 추출 완료")
         
     except Exception as e:
-        logger.error(f"❌ 문서 추출 중 오류: {e}")
+        logger.error(f"❌ 문서 목록 추출 중 오류: {e}")
     
     return documents
+
+def extract_detail_amount(driver) -> Dict[str, Any]:
+    """
+    팝업 상세 페이지에서 재무 정보를 추출합니다.
+    
+    Args:
+        driver: Selenium WebDriver 인스턴스
+        
+    Returns:
+        Dict[str, Any]: 추출된 재무 정보 (거래처명, 공급가액, 부가세, 합계금액)
+    """
+    detail_data = {
+        '거래처명': '',
+        '공급가액': 0,
+        '부가세': 0,
+        '합계금액': 0
+    }
+    
+    try:
+        logger.info("🔍 상세 정보 추출 중...")
+        
+        # 페이지 소스 가져오기
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
+        
+        # 전체 텍스트에서 레이블 기반으로 값 추출
+        full_text = soup.get_text()
+        
+        # 거래처명 추출
+        account_patterns = [
+            r'거래처명[:\s]*([^\n]+)',
+            r'거래처[:\s]*([^\n]+)',
+            r'거래처명[:\s]*([가-힣a-zA-Z0-9\s]+)'
+        ]
+        
+        for pattern in account_patterns:
+            match = re.search(pattern, full_text)
+            if match:
+                detail_data['거래처명'] = match.group(1).strip()
+                break
+        
+        # 공급가액 추출
+        supply_patterns = [
+            r'공급가액[:\s]*([\d,]+)',
+            r'공급가[:\s]*([\d,]+)',
+            r'공급가액[:\s]*([0-9,]+)'
+        ]
+        
+        for pattern in supply_patterns:
+            match = re.search(pattern, full_text)
+            if match:
+                try:
+                    detail_data['공급가액'] = int(match.group(1).replace(',', ''))
+                    break
+                except ValueError:
+                    continue
+        
+        # 부가세 추출
+        vat_patterns = [
+            r'부가세[:\s]*([\d,]+)',
+            r'VAT[:\s]*([\d,]+)',
+            r'부가세[:\s]*([0-9,]+)'
+        ]
+        
+        for pattern in vat_patterns:
+            match = re.search(pattern, full_text)
+            if match:
+                try:
+                    detail_data['부가세'] = int(match.group(1).replace(',', ''))
+                    break
+                except ValueError:
+                    continue
+        
+        # 합계금액 추출
+        total_patterns = [
+            r'합계금액[:\s]*([\d,]+)',
+            r'합계[:\s]*([\d,]+)',
+            r'총액[:\s]*([\d,]+)',
+            r'합계금액[:\s]*([0-9,]+)'
+        ]
+        
+        for pattern in total_patterns:
+            match = re.search(pattern, full_text)
+            if match:
+                try:
+                    detail_data['합계금액'] = int(match.group(1).replace(',', ''))
+                    break
+                except ValueError:
+                    continue
+        
+        logger.info(f"✅ 상세 정보 추출 완료: {detail_data}")
+        
+    except Exception as e:
+        logger.error(f"❌ 상세 정보 추출 중 오류: {e}")
+    
+    return detail_data
+
+def close_popup(driver):
+    """
+    팝업을 닫습니다.
+    
+    Args:
+        driver: Selenium WebDriver 인스턴스
+        
+    Returns:
+        bool: 팝업 닫기 성공 여부
+    """
+    try:
+        logger.info("🚪 팝업 닫기 시도 중...")
+        
+        # 다양한 닫기 버튼 선택자
+        close_selectors = [
+            "//button[contains(text(), '닫기')]",
+            "//button[contains(text(), 'X')]",
+            "//span[contains(text(), '닫기')]",
+            "//span[contains(text(), 'X')]",
+            "//button[@class='close']",
+            "//button[@class='btn-close']",
+            "//*[@id='closeBtn']",
+            "//*[@id='btnClose']"
+        ]
+        
+        for selector in close_selectors:
+            try:
+                close_button = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, selector))
+                )
+                close_button.click()
+                logger.info(f"✅ 팝업 닫기 성공: {selector}")
+                time.sleep(1)
+                return True
+            except TimeoutException:
+                continue
+        
+        # 닫기 버튼을 찾지 못한 경우 ESC 키 시도
+        from selenium.webdriver.common.keys import Keys
+        driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+        logger.info("✅ ESC 키로 팝업 닫기 시도")
+        time.sleep(1)
+        return True
+        
+    except Exception as e:
+        logger.warning(f"⚠️ 팝업 닫기 실패: {e}")
+        return False
+
+def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+    """
+    전체 크롤링 파이프라인을 실행합니다.
+    
+    Args:
+        driver: Selenium WebDriver 인스턴스
+        start_date (str): 시작 날짜 (YYYY-MM-DD)
+        end_date (str): 종료 날짜 (YYYY-MM-DD)
+        
+    Returns:
+        List[Dict[str, Any]]: 추출된 전체 데이터 리스트
+    """
+    all_data = []
+    
+    try:
+        logger.info("🚀 전체 크롤링 시작")
+        
+        # '매출품의'와 '매입품의' 키워드로 목록 추출
+        keywords = ['매출품의', '매입품의']
+        
+        for keyword in keywords:
+            logger.info(f"📋 '{keyword}' 목록 추출 중...")
+            
+            # 목록 페이지에서 문서 링크 추출
+            document_list = extract_document_list(driver, start_date, end_date, keyword)
+            
+            if not document_list:
+                logger.warning(f"⚠️ '{keyword}' 문서가 없습니다")
+                continue
+            
+            logger.info(f"✅ '{keyword}' 문서 {len(document_list)}건 발견")
+            
+            # 각 문서 링크를 순회하며 상세 정보 추출
+            for idx, doc in enumerate(document_list, 1):
+                try:
+                    logger.info(f"📄 [{idx}/{len(document_list)}] {doc['문서제목']} 처리 중...")
+                    
+                    # a. 문서 링크 클릭하여 팝업 띄우기
+                    try:
+                        # 링크가 상대 경로인 경우 절대 경로로 변환
+                        link = doc['링크']
+                        if link.startswith('/'):
+                            link = driver.current_url.rsplit('/', 1)[0] + link
+                        elif not link.startswith('http'):
+                            link = driver.current_url.rsplit('/', 1)[0] + '/' + link
+                        
+                        driver.get(link)
+                        time.sleep(2)  # 팝업 로딩 대기
+                        
+                    except Exception as e:
+                        logger.error(f"❌ 팝업 열기 실패: {e}")
+                        continue
+                    
+                    # b. 팝업 내부 정보 추출
+                    detail_info = extract_detail_amount(driver)
+                    
+                    # 문서 정보와 상세 정보 통합
+                    combined_data = {
+                        **doc,
+                        **detail_info
+                    }
+                    
+                    all_data.append(combined_data)
+                    logger.info(f"✅ [{idx}/{len(document_list)}] 추출 완료")
+                    
+                    # c. 팝업 닫기
+                    close_popup(driver)
+                    
+                    # 목록 페이지로 돌아가기
+                    driver.back()
+                    time.sleep(1)
+                    
+                except Exception as e:
+                    logger.error(f"❌ 문서 처리 중 오류: {e}")
+                    continue
+        
+        # 최종 데이터를 JSON 파일로 저장
+        import json
+        import os
+        
+        output_dir = "output"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        output_file = os.path.join(output_dir, "temp_raw_data.json")
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(all_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"✅ 전체 크롤링 완료: {len(all_data)}건의 데이터를 {output_file}에 저장")
+        
+        return all_data
+        
+    except Exception as e:
+        logger.error(f"❌ 전체 크롤링 중 오류: {e}")
+        return all_data
 
 def parse_date_from_text(date_text: str) -> datetime:
     """

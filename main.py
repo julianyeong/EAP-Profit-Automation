@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.join(os.path.dirname(__file__), 'modules'))
 
 from modules.web_setup import setup_driver, login_groupware
-from modules.data_crawler import navigate_to_handover_document_list, crawl_all_data, get_last_12_months, parse_date_range
+from modules.data_crawler import navigate_to_handover_document_list, run_full_crawling, get_last_12_months, parse_date_range
 from modules.data_processor import export_to_excel, process_monthly_summary, create_detailed_sheet, create_profit_analysis
 
 def main():
@@ -95,31 +95,33 @@ def main():
             return 1 # 이동 실패 시 프로그램 종료
         logger.info("✅ 인수인계문서 목록 페이지로 이동 성공.")
         
-    #     # --- [이 아래는 로그인 테스트 성공 후 진행할 다음 단계입니다.] ---
+        # 데이터 크롤링 실행
+        logger.info("📊 데이터 크롤링 시작...")
+        all_data = run_full_crawling(driver, start_date, end_date)
         
-    #     # Extract data
-    #     logger.info("📊 데이터 추출 중...")
-    #     df = crawl_all_data(driver, start_date, end_date)
+        if not all_data:
+            logger.warning("⚠️ 추출된 데이터가 없습니다.")
+            return 0
         
-    #     if df.empty:
-    #         logger.warning("⚠️ 추출된 데이터가 없습니다.")
-    #         return 0
+        logger.info(f"✅ 총 {len(all_data)}건의 데이터 추출 완료")
         
-    #     logger.info(f"✅ {len(df)}건의 데이터 추출 완료")
+        # # DataFrame 생성 및 Excel 보고서 생성
+        # logger.info("📈 데이터 분석 및 Excel 보고서 생성 중...")
         
-    #     # Process data and generate Excel report
-    #     logger.info("📈 데이터 분석 및 Excel 보고서 생성 중...")
+        # # JSON 데이터를 DataFrame으로 변환
+        # import pandas as pd
+        # df = pd.DataFrame(all_data)
         
-    #     # 데이터 처리
-    #     monthly_df = process_monthly_summary(df)
-    #     detailed_df = create_detailed_sheet(df)
-    #     analysis_df = create_profit_analysis(monthly_df)
+        # # 데이터 처리
+        # monthly_df = process_monthly_summary(df)
+        # detailed_df = create_detailed_sheet(df)
+        # analysis_df = create_profit_analysis(monthly_df)
         
-    #     # Excel 보고서 생성
-    #     filename = export_to_excel(detailed_df, monthly_df, analysis_df)
+        # # Excel 보고서 생성
+        # filename = export_to_excel(detailed_df, monthly_df, analysis_df)
         
-    #     logger.info(f"🎉 작업 완료! 보고서가 저장되었습니다: {filename}")
-    #     return 0
+        # logger.info(f"🎉 작업 완료! 보고서가 저장되었습니다: {filename}")
+        # return 0
         
     except Exception as e:
         logger.error(f"❌ 오류 발생: {e}", exc_info=True)
