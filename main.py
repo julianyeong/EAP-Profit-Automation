@@ -19,9 +19,8 @@ logger = logging.getLogger(__name__)
 # Add modules directory to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'modules'))
 
-from modules.web_setup import setup_driver, login_groupware, navigate_to_handover_document_list
-# [주의] 아래 모듈들은 로그인 테스트 후 필요하므로, 지금은 작동하지 않아도 됩니다.
-from modules.data_crawler import crawl_all_data, get_last_12_months, parse_date_range
+from modules.web_setup import setup_driver, login_groupware
+from modules.data_crawler import navigate_to_handover_document_list, crawl_all_data, get_last_12_months, parse_date_range
 from modules.data_processor import export_to_excel, process_monthly_summary, create_detailed_sheet, create_profit_analysis
 
 def main():

@@ -44,33 +44,123 @@ def navigate_to_handover_document_list(driver):
     
     # --- 페이지 이동 후 로딩 대기 및 2단계 클릭 시작 ---
 
-    # 2. '인수인계문서' 서브 메뉴 클릭
-    logger.info("2단계: 🔍 '인수인계문서' 서브 메뉴 클릭 시도 중...")
+    logger.info("2단계: 🔍 '인수인계' 메뉴 확장 및 '인수인계문서' 클릭 시도 중...")
     try:
-        # 1. 페이지 로딩 대기: 새로운 페이지에서 고유한 요소(ul class="dep1" 등)가 나타날 때까지 기다립니다.
-        # (2단계 요소의 부모 요소인 ul.dep1이 나타날 때까지 기다리는 것이 일반적입니다.)
-        XPATH_APPROVAL_CONTENT_AREA = "//ul[@class='dep1']"
+        # 1. 페이지 로딩 대기: 새로운 페이지에서 고유한 요소가 나타날 때까지 기다립니다.
+        XPATH_APPROVAL_CONTENT_AREA = "//div[@id='sideLnb']"
         WebDriverWait(driver, 15).until(
-             EC.presence_of_element_located((By.XPATH, XPATH_APPROVAL_CONTENT_AREA))
+            EC.presence_of_element_located((By.XPATH, XPATH_APPROVAL_CONTENT_AREA))
         )
         logger.info("✅ 전자결재 페이지 내부 요소 로딩 완료 확인.")
         
-        # 2. 서브 메뉴 클릭: ID 기반 XPath 사용 (가장 안정적)
-        ID_HANDOVER_DOCUMENT = "UBA5020_UBA"
+        # 추가 안정화 시간
+        time.sleep(2)
         
+        # 2. '인수인계' 상위 메뉴 찾기 및 클릭 (하위 메뉴 펼치기)
+        XPATH_HANDOVER_PARENT_MENU = "//span[text()='인수인계']"
+        
+        logger.info("🔍 '인수인계' 상위 메뉴 탐색 중...")
+        handover_parent = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, XPATH_HANDOVER_PARENT_MENU))
+        )
+        logger.info("✅ '인수인계' 상위 메뉴 요소 발견")
+        
+        # 요소가 보이도록 스크롤
+        logger.info("📜 요소가 보이도록 스크롤 중...")
+        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", handover_parent)
+        time.sleep(1)
+        
+        # 클릭 가능할 때까지 대기
+        logger.info("⏳ 요소가 클릭 가능할 때까지 대기 중...")
         WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.ID, ID_HANDOVER_DOCUMENT)) # By.ID 사용
-        ).click()
+            EC.element_to_be_clickable((By.XPATH, XPATH_HANDOVER_PARENT_MENU))
+        )
         
-        logger.info("✅ '인수인계문서' 서브 메뉴 클릭 성공.")
+        # 클릭 시도 (여러 방법)
+        click_success = False
         
-        # 최종 목록이 로드되는 것을 확인하는 추가 대기 로직이 필요할 수 있습니다.
-        # 예: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "document_list_table")))
+        # 방법 1: 일반 클릭
+        try:
+            logger.info("🖱️ 방법 1: 일반 클릭 시도...")
+            handover_parent.click()
+            logger.info("✅ '인수인계' 상위 메뉴 클릭 성공 (일반 클릭)")
+            click_success = True
+        except Exception as e:
+            logger.warning(f"⚠️ 일반 클릭 실패: {e}")
         
+        # 방법 2: JavaScript 클릭
+        if not click_success:
+            try:
+                logger.info("🖱️ 방법 2: JavaScript 클릭 시도...")
+                driver.execute_script("arguments[0].click();", handover_parent)
+                logger.info("✅ '인수인계' 상위 메뉴 클릭 성공 (JavaScript 클릭)")
+                click_success = True
+            except Exception as e:
+                logger.warning(f"⚠️ JavaScript 클릭 실패: {e}")
+        
+        if not click_success:
+            logger.error("❌ 모든 클릭 방법 실패")
+            return False
+        
+        # 하위 메뉴가 펼쳐질 때까지 대기
+        logger.info("⏳ 하위 메뉴 펼쳐짐 대기 중...")
+        time.sleep(2)
+        
+        # 3. '인수인계문서' 서브 메뉴 클릭
+        XPATH_HANDOVER_DOCUMENT = "//span[text()='인수인계문서']"
+        
+        logger.info("🔍 '인수인계문서' 서브 메뉴 탐색 중...")
+        handover_doc = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, XPATH_HANDOVER_DOCUMENT))
+        )
+        logger.info("✅ '인수인계문서' 서브 메뉴 요소 발견")
+        
+        # 요소가 보이도록 스크롤
+        logger.info("📜 요소가 보이도록 스크롤 중...")
+        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", handover_doc)
+        time.sleep(1)
+        
+        # 클릭 시도 (여러 방법)
+        click_success = False
+        
+        # 방법 1: 일반 클릭
+        try:
+            logger.info("🖱️ 방법 1: 일반 클릭 시도...")
+            handover_doc.click()
+            logger.info("✅ '인수인계문서' 서브 메뉴 클릭 성공 (일반 클릭)")
+            click_success = True
+        except Exception as e:
+            logger.warning(f"⚠️ 일반 클릭 실패: {e}")
+        
+        # 방법 2: JavaScript 클릭
+        if not click_success:
+            try:
+                logger.info("🖱️ 방법 2: JavaScript 클릭 시도...")
+                driver.execute_script("arguments[0].click();", handover_doc)
+                logger.info("✅ '인수인계문서' 서브 메뉴 클릭 성공 (JavaScript 클릭)")
+                click_success = True
+            except Exception as e:
+                logger.warning(f"⚠️ JavaScript 클릭 실패: {e}")
+        
+        if not click_success:
+            logger.error("❌ 모든 클릭 방법 실패")
+            return False
+        
+        # 최종 페이지 로딩 대기
+        logger.info("⏳ 인수인계문서 목록 페이지 로딩 대기 중...")
+        time.sleep(3)
+        
+        logger.info("✅✅✅ '인수인계문서' 목록 페이지 이동 완료 ✅✅✅")
         return True
     
-    except TimeoutException:
-        logger.error("❌ 2단계: '인수인계문서' 서브 메뉴를 찾거나 클릭할 수 없습니다. (Timeout)")
+    except TimeoutException as te:
+        logger.error(f"❌ 2단계: 타임아웃 오류 - {te}")
+        # 디버깅을 위한 스크린샷 저장
+        try:
+            driver.save_screenshot("debug_timeout_error.png")
+            logger.info("💾 디버깅용 스크린샷 저장: debug_timeout_error.png")
+        except:
+            pass
         return False
     except Exception as e:
         logger.error(f"❌ 2단계: 예상치 못한 오류 발생: {e}")
@@ -308,10 +398,10 @@ def crawl_all_data(driver, start_date: str, end_date: str) -> pd.DataFrame:
     try:
         logger.info("🚀 전체 데이터 크롤링 시작")
         
-        # 품의서 목록 페이지로 이동
-        if not navigate_to_approval_list(driver):
-            logger.error("❌ 품의서 목록 페이지 이동 실패")
-            return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
+        # 품의서 목록 페이지로 이동 (이미 navigate_to_handover_document_list로 이동했으므로 스킵)
+        # if not navigate_to_handover_document_list(driver):
+        #     logger.error("❌ 품의서 목록 페이지 이동 실패")
+        #     return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
         
         all_documents = []
         
