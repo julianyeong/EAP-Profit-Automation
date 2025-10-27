@@ -290,10 +290,10 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
                 
                 document_data = {
                     '기안일': doc_date.strftime('%Y-%m-%d'),
-                    '매출품의|매입품의의': doc_type,
+                    '매출품의|매입품의': doc_type,
                     '문서제목': title,
                     '사업본부-문서번호': link_href,
-                    '상태' : status
+                    '종결|완료' : status
                 }
                 
                 documents.append(document_data)
