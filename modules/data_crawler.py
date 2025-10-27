@@ -3,6 +3,7 @@
 Amaranth 그룹웨어에서 종결된 매출/매입 품의서 데이터를 추출합니다.
 """
 
+from tarfile import data_filter
 import time
 import re
 from datetime import datetime, timedelta
@@ -227,84 +228,84 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
     try:
         logger.info(f"📄 '{doc_keyword}' 키워드 문서 목록 추출 중...")
         
-        # 페이지 소스 가져오기
+        # 1. HTML 소스 가져오기 및 BeautifulSoup 파싱
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, 'html.parser')
         
+        # [핵심 수정 1: UL 컨테이너 탐색으로 대체] 
         document_list_container = soup.select_one('ul.tableBody') 
-        # ------------------------------------------------------------------
-
+        
         if not document_list_container:
             logger.warning("⚠️ 품의서 목록 컨테이너 (ul.tableBody)를 찾을 수 없습니다")
             return documents
 
-        # [핵심 수정 2: LI 행들 추출 및 cells 로직 제거] ---------------------
-        # 테이블 행들 추출 -> 목록 행들 추출 (LI 태그)
-        rows = document_list_container.find_all('li', recursive=False)  # 헤더 제외
+        # 2. LI 행들 추출 및 cells 로직 제거
+        rows = document_list_container.find_all('li', recursive=False)  
+        logger.info(f"📊 총 {len(rows)}개의 행을 찾았습니다.")
 
-        for row in rows:
+        for idx, row in enumerate(rows, 1):
             try:
-                # ⚠️ 기존 cells = row.find_all(['td', 'th']) 및 len(cells) 검사는 제거됩니다.
-                
-                # 1. 문서 제목 및 링크 추출 (titDiv 클래스 내부)
+                # 1. 문서 제목 추출 (titDiv .title span)
                 title_element = row.select_one('.titDiv .title span')
-                
-                if not title_element: continue 
-                
+                if not title_element:
+                    # 제목 텍스트를 가진 span이 없을 경우, title 클래스 자체의 텍스트를 시도 (안정성 보강)
+                    title_element = row.select_one('.titDiv .title')
+                    if not title_element: continue
                 title = title_element.get_text(strip=True)
                 
-                # 문서번호/링크가 들어있는 infoDiv를 찾습니다.
-                # 문서번호를 포함하는 infoLink 요소가 곧 링크처럼 사용됨
-                link_text_element = row.select_one('.infoDiv .txt.infoLink:nth-of-type(3)')
-                
-                if not link_text_element: continue
+                # 2. 문서번호/링크 추출 (infoDiv 내부, 두 번째 infoLink 텍스트 사용)
+                info_links_container = row.select_one('.infoDiv .h-box')
+                if not info_links_container: continue
 
-                link_href = link_text_element.get_text(strip=True) # 실제로는 품의번호 텍스트입니다.
+                info_links = info_links_container.find_all('div', class_=lambda x: x and 'txt' in x and 'infoLink' in x)
+                if len(info_links) < 2: continue # 품의 종류와 문서번호 2개가 있어야 함
+
+                link_text_element = info_links[1] # 두 번째 infoLink (문서번호 텍스트)
+                link_href = link_text_element.get_text(strip=True) #부서 및 문서번호호
                 
-                # 2. 기안일 추출 (dateText 클래스)
+                # 3. 기안일 추출 (dateText 클래스)
                 date_text_element = row.select_one('.dateText')
                 date_text = date_text_element.get_text(strip=True) if date_text_element else ""
                 
-                # 3. 상태 확인 (종결/완료된 문서만) - process 클래스 사용
+                # 4. 상태 확인 (종결/완료된 문서만)
                 status_element = row.select_one('.process .ellipsis2')
                 status = status_element.get_text(strip=True) if status_element else ""
                 
-                if '종결' not in status and '완료' not in status:
-                    continue
+                if '종결' not in status and '완료' not in status: continue
                 
-                # [기존의 날짜 파싱 및 필터링 로직 유지] --------------------------------
-                try:
-                    doc_date = parse_date_from_text(date_text)
-                    if not is_date_in_range(doc_date, start_date, end_date):
-                        continue
-                except:
-                    continue
+                # 5. 날짜 파싱 및 필터링 (기존 로직 유지)
+                doc_date = parse_date_from_text(date_text)
+                if not is_date_in_range(doc_date, start_date, end_date): continue
+                print(doc_date)
                 
-                # 4. 키워드 필터링 및 데이터 구조화 (금액 로직은 이미 제거되었다고 가정)
-                if doc_keyword not in title:
-                    continue
+                # 6. 키워드 필터링 및 데이터 구조화 (금액 로직은 완전히 제거됨)
+                if doc_keyword not in title: continue
                 
-                # 문서 타입 결정 (매출품의, 매입품의)
                 doc_type = '매출품의' if '매출품의' in title else '매입품의'
-
+                
+                print(doc_date)
+                print(title)
+                print(link_href)
+                print(doc_type)
+                
                 document_data = {
-                    '날짜': doc_date.strftime('%Y-%m-%d'),
+                    '기안일': doc_date.strftime('%Y-%m-%d'),
                     '문서제목': title,
-                    '링크': link_href, # 문서번호가 포함된 텍스트
-                    '구분': doc_type
+                    '사업본부-문서번호': link_href, 
+                    '종결|완료': doc_type
                 }
                 
                 documents.append(document_data)
                 logger.debug(f"✅ 문서 링크 추출: {title} - {doc_date.strftime('%Y-%m-%d')}")
                 
             except Exception as e:
-                logger.warning(f"⚠️ 행 처리 중 오류: {e}")
+                logger.warning(f"⚠️ [{idx}/{len(rows)}] 행 처리 중 오류: {e}")
                 continue
         
         logger.info(f"✅ '{doc_keyword}' 키워드 문서 {len(documents)}건 추출 완료")
         
     except Exception as e:
-        logger.error(f"❌ 문서 목록 추출 중 오류: {e}")
+        logger.error(f"❌ 문서 목록 추출 중 오류: {e}", exc_info=True)
     
     return documents
 
@@ -551,38 +552,59 @@ def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, 
 
 def parse_date_from_text(date_text: str) -> datetime:
     """
-    텍스트에서 날짜를 파싱합니다.
+    텍스트에서 날짜를 파싱합니다. (YYYY-MM-DD 또는 MM-DD 형식 지원)
     
     Args:
-        date_text (str): 날짜가 포함된 텍스트
+        date_text (str): 날짜가 포함된 텍스트 ('10-17 (금)', '2025.10.17' 등)
         
     Returns:
         datetime: 파싱된 날짜
+        
+    Raises:
+        ValueError: 파싱에 실패했을 경우
     """
-    # 다양한 날짜 형식 지원
+    
+    # 불필요한 공백, 괄호, 요일 정보 제거 (예: '10-17 (금)' -> '10-17')
+    cleaned_text = re.sub(r'\s*\(.+\)', '', date_text).strip()
+    
+    # 1. 월-일 형식 파싱 로직 추가 (목록 페이지 형식)
+    month_day_pattern = r'(\d{1,2})[.-]\s*(\d{1,2})' 
+    match_md = re.search(month_day_pattern, cleaned_text)
+    
+    if match_md:
+        month, day = match_md.groups()
+        current_year = datetime.now().year
+        try:
+            # 연도 정보가 없으므로 현재 연도를 사용합니다.
+            return datetime(current_year, int(month), int(day))
+        except ValueError:
+            pass # 잘못된 월/일이면 다음 패턴 시도 (매우 드뭄)
+
+    
+    # 2. 기존 연도 포함 패턴 시도
     date_patterns = [
-        r'(\d{4})[.-](\d{1,2})[.-](\d{1,2})',  # YYYY-MM-DD, YYYY.MM.DD
-        r'(\d{4})/(\d{1,2})/(\d{1,2})',        # YYYY/MM/DD
-        r'(\d{1,2})[.-](\d{1,2})[.-](\d{4})',  # MM-DD-YYYY, MM.DD.YYYY
+        r'(\d{4})[.-](\d{1,2})[.-](\d{1,2})', # YYYY-MM-DD, YYYY.MM.DD
+        r'(\d{4})/(\d{1,2})/(\d{1,2})',# YYYY/MM/DD
+        r'(\d{1,2})[.-](\d{1,2})[.-](\d{4})',# MM-DD-YYYY, MM.DD.YYYY
     ]
     
     for pattern in date_patterns:
-        match = re.search(pattern, date_text)
+        match = re.search(pattern, cleaned_text)
         if match:
             groups = match.groups()
             if len(groups) == 3:
                 try:
-                    if len(groups[0]) == 4:  # YYYY-MM-DD 형식
+                    if len(groups[0]) == 4: # YYYY-MM-DD 형식
                         year, month, day = groups
-                    else:  # MM-DD-YYYY 형식
+                    else: # MM-DD-YYYY 형식
                         month, day, year = groups
                     
                     return datetime(int(year), int(month), int(day))
                 except ValueError:
                     continue
     
-    # 기본값으로 현재 날짜 반환
-    return datetime.now()
+    # 파싱 실패 시, 기본값 반환 대신 오류 발생 (디버깅 지원)
+    raise ValueError(f"날짜 텍스트 파싱 실패: 형식 '{date_text}'")
 
 def is_date_in_range(date: datetime, start_date: str, end_date: str) -> bool:
     """
