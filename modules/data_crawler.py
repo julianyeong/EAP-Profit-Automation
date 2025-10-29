@@ -3,7 +3,7 @@
 Amaranth 그룹웨어에서 종결된 매출/매입 품의서 데이터를 추출합니다.
 """
 
-from tarfile import data_filter
+from selenium.webdriver.common.keys import Keys
 import time
 import re
 from datetime import datetime, timedelta
@@ -307,139 +307,44 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
 def extract_detail_amount(driver, document_type: str) -> Dict[str, Any]:
     """
     팝업 상세 페이지에서 재무 정보를 추출합니다.
-    
-    Args:
-        driver: Selenium WebDriver 인스턴스
-        
-    Returns:
-        Dict[str, Any]: 추출된 재무 정보 (거래처명, 공급가액, 부가세, 합계금액)
+    (배경색 스타일 속성을 가진 <td> 셀을 직접 탐색하는 가장 안정적인 방법)
     """
     detail_data = {
-        '거래처명': '',
+        '거래처명': '.',
         '공급가액': 0,
         '부가세': 0,
         '합계금액': 0
     }
     
-    # try:
-    #     logger.info("🔍 상세 정보 추출 중...")
-        
-        # 페이지 소스 가져오기
     page_source = driver.page_source
     soup = BeautifulSoup(page_source, 'html.parser')
         
-    # 전체 텍스트에서 레이블 기반으로 값 추출
-    full_text = soup.get_text()
+    try:
+        # 1. 특정 배경색 스타일을 가진 모든 <td> 태그를 찾습니다.
+        # 합계 금액 셀들(공급가액, 부가세, 합계)이 이 스타일을 공유합니다.
+        target_style = 'background:rgb(255, 241, 214)'
         
-    #     # 거래처명 추출
-    #     account_patterns = [
-    #         r'거래처명[:\s]*([^\n]+)',
-    #         r'거래처[:\s]*([^\n]+)',
-    #         r'거래처명[:\s]*([가-힣a-zA-Z0-9\s]+)'
-    #     ]
+        # NOTE: find_all은 이 스타일을 가진 모든 <td>와 <th>를 반환합니다.
+        sum_cells = soup.find_all(['td', 'th'], 
+                                  style=lambda s: s and target_style in s)
         
-    #     for pattern in account_patterns:
-    #         match = re.search(pattern, full_text)
-    #         if match:
-    #             detail_data['거래처명'] = match.group(1).strip()
-    #             break
-        
-    #     # 공급가액 추출
-    #     supply_patterns = [
-    #         r'공급가액[:\s]*([\d,]+)',
-    #         r'공급가[:\s]*([\d,]+)',
-    #         r'공급가액[:\s]*([0-9,]+)'
-    #     ]
-        
-    #     for pattern in supply_patterns:
-    #         match = re.search(pattern, full_text)
-    #         if match:
-    #             try:
-    #                 detail_data['공급가액'] = int(match.group(1).replace(',', ''))
-    #                 break
-    #             except ValueError:
-    #                 continue
-        
-    #     # 부가세 추출
-    #     vat_patterns = [
-    #         r'부가세[:\s]*([\d,]+)',
-    #         r'VAT[:\s]*([\d,]+)',
-    #         r'부가세[:\s]*([0-9,]+)'
-    #     ]
-        
-    #     for pattern in vat_patterns:
-    #         match = re.search(pattern, full_text)
-    #         if match:
-    #             try:
-    #                 detail_data['부가세'] = int(match.group(1).replace(',', ''))
-    #                 break
-    #             except ValueError:
-    #                 continue
-        
-    #     # 합계금액 추출
-    #     total_patterns = [
-    #         r'합계금액[:\s]*([\d,]+)',
-    #         r'합계[:\s]*([\d,]+)',
-    #         r'총액[:\s]*([\d,]+)',
-    #         r'합계금액[:\s]*([0-9,]+)'
-    #     ]
-        
-    #     for pattern in total_patterns:
-    #         match = re.search(pattern, full_text)
-    #         if match:
-    #             try:
-    #                 detail_data['합계금액'] = int(match.group(1).replace(',', ''))
-    #                 break
-    #             except ValueError:
-    #                 continue
-        
-    #     logger.info(f"✅ 상세 정보 추출 완료: {detail_data}")
-        
-    # except Exception as e:
-    #     logger.error(f"❌ 상세 정보 추출 중 오류: {e}")
-    
-    # return detail_data
-    detail_data = {'공급가액': 0, '부가세': 0, '합계금액': 0, '회사 이름': 'N/A'}
-    
-    # 1. 합계 정보가 포함된 테이블 탐색 (고정된 스타일 속성 사용)
-    total_sum_table = soup.find('table', 
-        style=lambda s: s and 'border-top:2px solid rgb(102, 102, 102)' in s)
-        
-    if not total_sum_table:
-        logger.warning("⚠️ 합계 테이블을 찾을 수 없습니다. 정규 표현식으로 fallback.")
-        # 테이블을 못 찾으면 기존의 정규 표현식 로직으로 대체됩니다. (이후 코드에서 처리)
-        return detail_data 
+        # 합계 텍스트가 있는 첫 번째 셀도 이 스타일을 가지고 있으므로, 총 4개 또는 3개의 셀이 발견될 것입니다.
+        if len(sum_cells) < 3:
+            logger.warning("⚠️ 특정 배경색 스타일을 가진 셀을 충분히 찾을 수 없습니다. (최소 3개 필요)")
+            return detail_data
 
-    # 2. '합계' 텍스트가 Bold 처리된 최종 합계 행(Row) 탐색
-    final_sum_row = total_sum_table.find('tr', string=lambda t: t and '합계' in t)
+        # 2. 금액 추출 (뒤에서 3개 셀에 공급가액, 부가세, 합계가 있음)
+        # 마지막 세 개의 셀만 금액 정보입니다.
         
-    if not final_sum_row:
-         logger.warning("⚠️ 합계 금액이 담긴 행(Row)을 찾을 수 없습니다.")
-         return detail_data 
-         
-    # 3. 해당 행의 모든 셀(<td> 또는 <th>) 추출
-    # NOTE: 합계 행은 마지막 <tr>의 모든 셀을 사용합니다.
-    sum_cells = final_sum_row.find_all(['td', 'th'])
-
-    # 4. 금액 추출 (뒤에서 3개 셀)
-    # [합계금액, 부가세, 공급가액]이 뒤에서 -1, -2, -3 인덱스로 있다고 가정합니다.
-    if len(sum_cells) >= 3:
-        try:
-            # 💡 추출 목표: 공급가액, 부가세, 합계
-            detail_data['합계금액'] = _clean_amount(sum_cells[-1].get_text(strip=True))
-            detail_data['부가세'] = _clean_amount(sum_cells[-2].get_text(strip=True))
-            detail_data['공급가액'] = _clean_amount(sum_cells[-3].get_text(strip=True))
-        except Exception:
-            logger.warning("⚠️ 합계 행에서 금액을 추출할 수 없습니다. 셀 인덱스/값 확인 필요.")
-            
-    # 5. 거래처명 추출 (가장 상단의 레이블 테이블에서 추출)
-    account_label = soup.find('th', string=lambda t: t and '거래처명' in t)
-    if account_label:
-        account_value_cell = account_label.find_next_sibling('td')
-        if account_value_cell:
-             # 거래처명은 상위의 다른 테이블에 있으므로, 추출된 텍스트만 저장합니다.
-             detail_data['회사 이름'] = account_value_cell.get_text(strip=True).split('외')[0].strip()
-
+        # 💡 추출 목표: 합계금액, 부가세, 공급가액 (뒤에서 -1, -2, -3 인덱스)
+        detail_data['합계금액'] = _clean_amount(sum_cells[-1].get_text(strip=True))
+        detail_data['부가세'] = _clean_amount(sum_cells[-2].get_text(strip=True))
+        detail_data['공급가액'] = _clean_amount(sum_cells[-3].get_text(strip=True))
+        logger.info("✅ 스타일 속성 기반 금액 추출 성공")
+        
+    except Exception as e:
+        logger.error(f"❌ 상세 정보 추출 중 오류: {e}")
+        
     return detail_data
 
 def close_popup(driver):
@@ -458,13 +363,14 @@ def close_popup(driver):
 def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, Any]]:
     """
     전체 크롤링 파이프라인을 실행합니다.
+    (팝업(새 창)이 열리는 환경을 고려하여 윈도우 핸들 전환 로직을 추가했습니다.)
     """
     all_data = []
     
     try:
         logger.info("🚀 전체 크롤링 시작")
         
-        keywords = ['매출품의', '매입품의']
+        keywords = ['매입품의', '매출품의']
         
         for keyword in keywords:
             logger.info(f"📋 '{keyword}' 목록 추출 중...")
@@ -480,7 +386,7 @@ def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, 
             
             # 2. 각 문서 링크를 순회하며 상세 정보 추출 (팝업 제어)
             for idx, doc in enumerate(document_list, 1):
-                list_page_url = driver.current_url # 현재 목록 페이지 URL 저장 (오류 복구용)
+                list_window = driver.current_window_handle # 현재(목록) 창 핸들 저장
                 
                 try:
                     logger.info(f"📄 [{idx}/{len(document_list)}] {doc['문서제목']} 처리 중...")
@@ -495,21 +401,37 @@ def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, 
                     # JavaScript 강제 클릭 (팝업을 띄우는 올바른 동작)
                     driver.execute_script("arguments[0].click();", title_span)
                     logger.info("✅ 문서 제목 클릭 성공. 팝업 로딩 대기 중...")
-                    time.sleep(2) # 팝업 로딩 대기
+                    time.sleep(2) # 팝업 창이 완전히 뜨기를 위한 짧은 고정 대기
 
-                    # --- b. 팝업 내부 정보 추출 (문서 종류 전달) ---
+                    # *** 🌟 팝업(새 창) 컨텍스트 전환 🌟 ***
+                    new_window = None
+                    all_windows = driver.window_handles
+                    
+                    # 목록 창을 제외한 새로운 팝업 창 핸들 찾기
+                    for window in all_windows:
+                        if window != list_window:
+                            new_window = window
+                            driver.switch_to.window(new_window)
+                            logger.info(f"✅ 윈도우 전환 성공: 새 팝업 창으로 이동")
+                            break
+                    
+                    if not new_window:
+                        logger.warning("⚠️ 팝업 창이 감지되지 않아 윈도우 전환에 실패했습니다. 목록 페이지 유지.")
+                        continue # 다음 문서로 이동 (목록 창으로 계속 진행)
+                    # *** 🌟 팝업 컨텍스트 전환 종료 🌟 ***
+                    
+                    # --- b. 팝업 내부 정보 추출 (driver는 팝업을 보고 있음) ---
                     doc_type = doc.get('구분', '')
                     detail_info = extract_detail_amount(driver, doc_type) 
                     
                     # --- c. 팝업 닫기 및 통합 ---
-                    close_popup(driver)
-                    logger.info("✅ 팝업 닫기 완료.")
-                        
-                    # 목록 페이지로 복귀 (팝업이 레이어 모달이므로 driver.back() 불필요)
-                    if driver.current_url != list_page_url:
-                        driver.get(list_page_url) 
-                    time.sleep(1)
-                        
+                    # 팝업 창 닫기
+                    driver.close() 
+
+                    # 메인(목록) 창으로 다시 전환
+                    driver.switch_to.window(list_window)
+                    logger.info("✅ 팝업 닫기 및 메인 창 복귀 완료.")
+                    
                     # 문서 정보와 상세 정보 통합
                     combined_data = {
                         **doc,
@@ -520,31 +442,22 @@ def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, 
                         
                 except Exception as e:
                     logger.error(f"❌ 문서 처리 중 오류: {e}")
-                    # 오류 발생 시 목록 페이지로 강제 복귀
-                    try: driver.get(list_page_url) 
-                    except: pass
-                    continue
-        
-        # 4. 최종 데이터를 JSON 파일로 저장
-        import json
-        import os
-        
-        output_dir = "output"
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
-        output_file = os.path.join(output_dir, "temp_raw_data.json")
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(all_data, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"✅ 전체 크롤링 완료: {len(all_data)}건의 데이터를 {output_file}에 저장")
-        
-        return pd.DataFrame(all_data)
-        
+                    
+                    # 오류 발생 시 복구 로직: 팝업이 열려있다면 닫고 메인 창으로 복귀
+                    try: 
+                        # 팝업이 열린 채 에러가 발생했다면 닫고 메인으로 복귀
+                        if driver.current_window_handle != list_window:
+                            driver.close()
+                            driver.switch_to.window(list_window)
+                    except: 
+                        logger.error("🚨 오류 복구 중 심각한 오류 발생. 드라이버 상태 확인 필요.")
+                    
+                    continue # 다음 문서로 이동
+                    
     except Exception as e:
-        logger.error(f"❌ 전체 크롤링 중 오류: {e}")
-        return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
+        logger.error(f"❌ 전체 크롤링 파이프라인 중 예상치 못한 오류 발생: {e}")
+        
+    return all_data
 
 def parse_date_from_text(date_text: str) -> datetime:
     """
