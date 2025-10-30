@@ -13,6 +13,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from bs4 import BeautifulSoup
+from selenium.webdriver import ActionChains
 import logging
 
 logger = logging.getLogger(__name__)
@@ -237,17 +238,49 @@ def parse_date_range(start_date_str: str, end_date_str: str) -> Tuple[str, str]:
 def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: str) -> List[Dict[str, Any]]:
     """
     목록 페이지에서 특정 키워드가 포함된 문서들의 링크를 추출합니다.
+    (특정 목록 컨테이너 내부 스크롤 로직 적용)
     """
     documents = []
     
     try:
         logger.info(f"📄 '{doc_keyword}' 키워드 문서 목록 추출 중...")
         
-        # 1. 최하단까지 스크롤하여 모든 데이터 로딩
-        logger.info("📜 페이지 최하단까지 스크롤 중...")
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)  # 스크롤 후 안정화 대기
-        logger.info("✅ 스크롤 완료")
+        # 1. 스크롤 대상 요소 찾기 (인라인 스타일 속성을 이용한 정확한 탐색)
+        # CSS Selector: style 속성에 'overflow: scroll'을 포함하는 모든 DIV
+        SCROLL_CONTAINER_CSS = "div[style*='overflow: scroll']"
+        
+        try:
+            # 10초 대기하여 스크롤 가능한 요소 확보
+            scrollable_element = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, SCROLL_CONTAINER_CSS))
+            )
+            logger.info("✅ 스크롤 대상 요소 (style*='overflow: scroll') 찾기 성공")
+        except TimeoutException:
+            logger.error("❌ 스크롤 대상 컨테이너를 찾지 못했습니다. 목록 영역이 로드되지 않았을 수 있습니다.")
+            return documents
+        
+        # 2. 반복 스크롤 로직 실행 (전체 목록 로드를 보장)
+        last_height = 0 
+        max_attempts = 15 # 충분한 시도 횟수
+
+        for i in range(max_attempts):
+            logger.info(f"📜 [{i+1}차 스크롤] 목록 최하단으로 스크롤 중...")
+            
+            # 스크롤 명령 실행 (요소 내부 스크롤을 최하단으로)
+            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable_element)
+            time.sleep(3) # 데이터 로딩 및 안정화 대기
+            
+            # 새 높이 가져오기
+            new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_element)
+            
+            # 스크롤 높이가 변하지 않으면 종료
+            if new_height == last_height:
+                logger.info("✅ 더 이상 새로운 행이 로드되지 않아 스크롤 종료.")
+                break 
+                
+            last_height = new_height
+            
+        logger.info(f"✅ 반복 스크롤 완료.")
         
         # 2. HTML 소스 가져오기 및 BeautifulSoup 파싱
         page_source = driver.page_source
@@ -261,7 +294,7 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
             return documents
 
         # 2. LI 행들 추출
-        rows = document_list_container.find_all('li', recursive=False)  
+        rows = document_list_container.find_all('li', recursive=False) 
         logger.info(f"📊 총 {len(rows)}개의 행을 찾았습니다.")
 
         for idx, row in enumerate(rows, 1):
@@ -289,6 +322,7 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
                 
                 if '종결' not in status and '완료' not in status: continue
                 
+                # NOTE: parse_date_from_text, is_date_in_range 함수는 외부에서 정의되었다고 가정
                 doc_date = parse_date_from_text(date_text)
                 if not is_date_in_range(doc_date, start_date, end_date): continue
                 
@@ -703,38 +737,50 @@ def crawl_all_data(driver, start_date: str, end_date: str) -> pd.DataFrame:
         end_date (str): 종료 날짜 (YYYY-MM-DD)
         
     Returns:
-        pd.DataFrame: 추출된 데이터 (컬럼: ['날짜', '문서제목', '구분', '공급가액'])
+        pd.DataFrame: 추출된 데이터
+            - 기본 컬럼: ['날짜', '문서제목', '구분', '공급가액']
+            - 추가 컬럼: ['거래처명', '부가세', '합계금액', '링크'] (가능 시)
     """
     try:
-        logger.info("🚀 전체 데이터 크롤링 시작")
-        
-        # 품의서 목록 페이지로 이동 (이미 navigate_to_handover_document_list로 이동했으므로 스킵)
-        # if not navigate_to_handover_document_list(driver):
-        #     logger.error("❌ 품의서 목록 페이지 이동 실패")
-        #     return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
-        
-        all_documents = []
-        
-        # 매출 문서 추출
-        logger.info("💰 매출 문서 추출 중...")
-        sales_docs = extract_completed_documents(driver, start_date, end_date, '매출')
-        all_documents.extend(sales_docs)
-        
-        # 매입 문서 추출
-        logger.info("💸 매입 문서 추출 중...")
-        purchase_docs = extract_completed_documents(driver, start_date, end_date, '매입')
-        all_documents.extend(purchase_docs)
-        
-        # DataFrame 생성
-        if all_documents:
-            df = pd.DataFrame(all_documents)
-            df['날짜'] = pd.to_datetime(df['날짜'])
-            df = df.sort_values('날짜')
-            logger.info(f"✅ 총 {len(df)}건의 데이터 크롤링 완료")
-        else:
-            df = pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
+        logger.info("🚀 전체 데이터 크롤링 시작 (run_full_crawling 사용)")
+
+        # 통합 크롤링 파이프라인 수행 (목록 → 팝업 상세 → 통합)
+        all_data = run_full_crawling(driver, start_date, end_date)
+
+        if not all_data:
             logger.warning("⚠️ 추출된 데이터가 없습니다")
-        
+            return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
+
+        # DataFrame 생성 및 표준 컬럼 정리
+        df = pd.DataFrame(all_data)
+
+        # 날짜 컬럼 표준화: '기안일' → '날짜'
+        if '기안일' in df.columns:
+            df['날짜'] = pd.to_datetime(df['기안일'], errors='coerce')
+        elif '날짜' in df.columns:
+            df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
+        else:
+            # 날짜 정보가 전혀 없는 경우 빈 프레임 반환 (처리 모듈 호환을 위해)
+            logger.warning("⚠️ 날짜 컬럼을 찾을 수 없어 빈 데이터프레임을 반환합니다")
+            return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
+
+        # 구분 표준화: '매출품의'/'매입품의' → '매출'/'매입'
+        if '구분' in df.columns:
+            df['구분'] = df['구분'].replace({'매출품의': '매출', '매입품의': '매입'})
+
+        # 필수 금액 컬럼 보정
+        if '공급가액' not in df.columns:
+            df['공급가액'] = 0
+
+        # 표시 컬럼 구성 (가능한 경우 추가 컬럼 포함)
+        base_columns = ['날짜', '문서제목', '구분', '공급가액']
+        extra_columns = [c for c in ['거래처명', '부가세', '합계금액', '링크'] if c in df.columns]
+        df = df[base_columns + extra_columns]
+
+        # 정렬 및 완료 로그
+        df = df.sort_values('날짜')
+        logger.info(f"✅ 총 {len(df)}건의 데이터 크롤링 완료")
+
         return df
         
     except Exception as e:

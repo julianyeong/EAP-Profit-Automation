@@ -18,13 +18,7 @@ logger = logging.getLogger(__name__)
 
 def process_monthly_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
-    월별 매출/매입 요약 데이터를 생성합니다.
-    
-    Args:
-        df (pd.DataFrame): 원본 데이터 (컬럼: ['날짜', '문서제목', '구분', '공급가액'])
-        
-    Returns:
-        pd.DataFrame: 월별 요약 데이터 (컬럼: ['년월', '매출액', '매입액', '손익'])
+    월별 매출/매입 요약 데이터를 생성합니다. (개선된 Pandas 로직 적용)
     """
     try:
         logger.info("📊 월별 요약 데이터 생성 중...")
@@ -32,35 +26,28 @@ def process_monthly_summary(df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame(columns=['년월', '매출액', '매입액', '손익'])
         
-        # 년월 컬럼 추가
         df_copy = df.copy()
-        df_copy['년월'] = df_copy['날짜'].dt.to_period('M')
+        df_copy['년월'] = df_copy['날짜'].dt.to_period('M').astype(str) # string으로 변환
         
-        # 월별로 그룹화하여 매출/매입 합계 계산
-        monthly_data = []
+        # 1. 월별, 구분별 공급가액 합계 계산
+        summary_df = df_copy.groupby(['년월', '구분'])['공급가액'].sum().unstack(fill_value=0)
         
-        for period in df_copy['년월'].unique():
-            period_data = df_copy[df_copy['년월'] == period]
+        # 2. 컬럼명 표준화 및 손익 계산
+        if '매출' in summary_df.columns:
+            summary_df = summary_df.rename(columns={'매출': '매출액'})
+        else:
+            summary_df['매출액'] = 0
             
-            # 매출액 계산
-            sales_amount = period_data[period_data['구분'] == '매출']['공급가액'].sum()
+        if '매입' in summary_df.columns:
+            summary_df = summary_df.rename(columns={'매입': '매입액'})
+        else:
+            summary_df['매입액'] = 0
             
-            # 매입액 계산
-            purchase_amount = period_data[period_data['구분'] == '매입']['공급가액'].sum()
-            
-            # 손익 계산
-            profit = sales_amount - purchase_amount
-            
-            monthly_data.append({
-                '년월': str(period),
-                '매출액': sales_amount,
-                '매입액': purchase_amount,
-                '손익': profit
-            })
+        summary_df['손익'] = summary_df['매출액'] - summary_df['매입액']
         
-        # DataFrame 생성 및 정렬
-        monthly_df = pd.DataFrame(monthly_data)
-        monthly_df = monthly_df.sort_values('년월')
+        # 인덱스(년월)를 컬럼으로 변환 및 정렬
+        monthly_df = summary_df.reset_index().sort_values('년월')
+        monthly_df = monthly_df[['년월', '매출액', '매입액', '손익']]
         
         logger.info(f"✅ 월별 요약 데이터 생성 완료: {len(monthly_df)}개월")
         return monthly_df
