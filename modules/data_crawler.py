@@ -3,7 +3,6 @@
 Amaranth 그룹웨어에서 종결된 매출/매입 품의서 데이터를 추출합니다.
 """
 
-from selenium.webdriver.common.keys import Keys
 import time
 import re
 from datetime import datetime, timedelta
@@ -34,6 +33,14 @@ def _clean_amount(text: str) -> int:
     except ValueError:
         # 변환 실패 시 0 반환 (데이터 오류 방지)
         return 0
+
+def _clean_text(text: str) -> str:
+    """ 텍스트에서 공백, 줄바꿈, 특수 공백을 제거하고 모두 소문자로 변환합니다. """
+    if not text:
+        return ""
+    # 모든 종류의 공백 문자(줄바꿈, 탭, 일반 공백, nbsp 등) 제거
+    cleaned = re.sub(r'\s+', '', text.strip()).lower()
+    return cleaned
 
 def navigate_to_handover_document_list(driver):
     """
@@ -236,7 +243,13 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
     try:
         logger.info(f"📄 '{doc_keyword}' 키워드 문서 목록 추출 중...")
         
-        # 1. HTML 소스 가져오기 및 BeautifulSoup 파싱
+        # 1. 최하단까지 스크롤하여 모든 데이터 로딩
+        logger.info("📜 페이지 최하단까지 스크롤 중...")
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)  # 스크롤 후 안정화 대기
+        logger.info("✅ 스크롤 완료")
+        
+        # 2. HTML 소스 가져오기 및 BeautifulSoup 파싱
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, 'html.parser')
         
@@ -304,43 +317,193 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
     
     return documents
 
-def extract_detail_amount(driver, document_type: str) -> Dict[str, Any]:
+def _extract_purchase_details(soup: BeautifulSoup) -> Dict[str, Any]:
     """
-    팝업 상세 페이지에서 재무 정보를 추출합니다.
-    (배경색 스타일 속성을 가진 <td> 셀을 직접 탐색하는 가장 안정적인 방법)
+    매입품의 상세 페이지에서 재무 정보를 추출합니다.
+    (배경색 스타일 속성을 가진 <td> 셀을 직접 탐색)
     """
     detail_data = {
-        '거래처명': '.',
+        '거래처명': '',
         '공급가액': 0,
         '부가세': 0,
         '합계금액': 0
     }
     
-    page_source = driver.page_source
-    soup = BeautifulSoup(page_source, 'html.parser')
-        
     try:
-        # 1. 특정 배경색 스타일을 가진 모든 <td> 태그를 찾습니다.
-        # 합계 금액 셀들(공급가액, 부가세, 합계)이 이 스타일을 공유합니다.
         target_style = 'background:rgb(255, 241, 214)'
-        
-        # NOTE: find_all은 이 스타일을 가진 모든 <td>와 <th>를 반환합니다.
         sum_cells = soup.find_all(['td', 'th'], 
                                   style=lambda s: s and target_style in s)
         
-        # 합계 텍스트가 있는 첫 번째 셀도 이 스타일을 가지고 있으므로, 총 4개 또는 3개의 셀이 발견될 것입니다.
         if len(sum_cells) < 3:
             logger.warning("⚠️ 특정 배경색 스타일을 가진 셀을 충분히 찾을 수 없습니다. (최소 3개 필요)")
             return detail_data
 
-        # 2. 금액 추출 (뒤에서 3개 셀에 공급가액, 부가세, 합계가 있음)
-        # 마지막 세 개의 셀만 금액 정보입니다.
-        
         # 💡 추출 목표: 합계금액, 부가세, 공급가액 (뒤에서 -1, -2, -3 인덱스)
         detail_data['합계금액'] = _clean_amount(sum_cells[-1].get_text(strip=True))
         detail_data['부가세'] = _clean_amount(sum_cells[-2].get_text(strip=True))
         detail_data['공급가액'] = _clean_amount(sum_cells[-3].get_text(strip=True))
-        logger.info("✅ 스타일 속성 기반 금액 추출 성공")
+        logger.info("✅ 매입품의 스타일 속성 기반 금액 추출 성공")
+        
+    except Exception as e:
+        logger.error(f"❌ 매입품의 상세 정보 추출 중 오류: {e}")
+        
+    return detail_data
+
+def _extract_sales_details_kakao(soup: BeautifulSoup) -> Dict[str, Any]:
+    """
+    매출품의 카카오클라우드 상세 페이지에서 재무 정보를 추출합니다.
+    ('합 계' 레이블을 찾아 9번째 셀에서 합계금액만 추출)
+    """
+    detail_data = {
+        '거래처명': '',
+        '공급가액': 0,
+        '부가세': 0,
+        '합계금액': 0
+    }
+    
+    try:
+        # '합 계' 텍스트를 포함하는 <tr> 찾기 (공백 정리하여 안정적으로 매칭)
+        total_rows = soup.find_all('tr')
+        total_row = None
+        
+        for row in total_rows:
+            row_text = re.sub(r'\s+', '', row.get_text(strip=True))
+            if '합계' in row_text and '합계' in re.sub(r'\s+', '', row.get_text(strip=True)):
+                total_row = row
+                break
+        
+        if not total_row:
+            logger.warning("⚠️ '합 계' 행을 찾을 수 없습니다")
+            return detail_data
+        
+        # 해당 행의 모든 셀 추출
+        cells = total_row.find_all(['td', 'th'])
+        
+        if len(cells) >= 9:
+            # 9번째 셀 (인덱스 8)에서 합계금액 추출
+            detail_data['합계금액'] = _clean_amount(cells[8].get_text(strip=True))
+            logger.info("✅ 카카오클라우드 합계금액 추출 성공")
+        else:
+            logger.warning(f"⚠️ 셀이 부족합니다. {len(cells)}개만 발견 (9개 필요)")
+        
+    except Exception as e:
+        logger.error(f"❌ 카카오클라우드 상세 정보 추출 중 오류: {e}")
+        
+    return detail_data
+
+def _extract_sales_details_general(soup: BeautifulSoup) -> Dict[str, Any]:
+    """
+    매출품의 일반 구조 상세 페이지에서 재무 정보를 추출합니다.
+    (정제된 텍스트 레이블 기반으로 인접한 값 셀을 찾아 추출하는 최적화된 로직)
+    """
+    detail_data = {
+        '거래처명': '',
+        '공급가액': 0,
+        '부가세': 0,
+        '합계금액': 0
+    }
+    
+    try:
+        # 1. '발행금액' 텍스트를 포함하는 <tr> 행을 찾습니다. (행을 찾는 최초 필터링)
+        # 이 행에는 '발행금액' 레이블이 포함되어 있으므로 이 행을 먼저 필터링합니다.
+        target_row = None
+        for row in soup.find_all('tr'):
+             if '발행금액' in row.get_text():
+                 target_row = row
+                 break
+        
+        if not target_row:
+            logger.warning("⚠️ '발행금액' 행(레이블)을 찾을 수 없습니다.")
+            return detail_data
+
+        logger.info("✅ '발행금액' 행 탐색 성공. 레이블 기반 값 추출 시작.")
+        
+        # 2. 행 내에서 레이블을 찾고 바로 옆 셀(Next Sibling)에서 값을 추출합니다.
+        
+        labels_to_find = {
+            '공급가액': '공급가액',
+            '부가세': '부가세',
+            '합계금액': '합계금액'
+        }
+        
+        # 행 내의 모든 셀을 반복하며 레이블을 찾습니다.
+        for cell in target_row.find_all(['td', 'th']):
+            cell_clean_text = _clean_text(cell.get_text())
+            
+            # 레이블을 찾았다면, 바로 다음 형제 셀에서 값을 추출합니다.
+            if '공급가액' in cell_clean_text and detail_data['공급가액'] == 0:
+                value_cell = cell.find_next_sibling(['td', 'th'])
+                if value_cell:
+                    detail_data['공급가액'] = _clean_amount(value_cell.get_text(strip=True))
+                    logger.debug(f"✅ 공급가액 추출 완료: {detail_data['공급가액']}")
+
+            elif '부가세' in cell_clean_text and detail_data['부가세'] == 0:
+                value_cell = cell.find_next_sibling(['td', 'th'])
+                if value_cell:
+                    detail_data['부가세'] = _clean_amount(value_cell.get_text(strip=True))
+                    logger.debug(f"✅ 부가세 추출 완료: {detail_data['부가세']}")
+            
+            elif '합계금액' in cell_clean_text and detail_data['합계금액'] == 0:
+                value_cell = cell.find_next_sibling(['td', 'th'])
+                if value_cell:
+                    detail_data['합계금액'] = _clean_amount(value_cell.get_text(strip=True))
+                    logger.debug(f"✅ 합계금액 추출 완료: {detail_data['합계금액']}")
+                    
+            # 모든 값을 찾았으면 종료 (옵션)
+            if detail_data['공급가액'] != 0 and detail_data['부가세'] != 0 and detail_data['합계금액'] != 0:
+                break
+        
+    except Exception as e:
+        logger.error(f"❌ 매출품의(일반) 상세 정보 추출 중 오류: {e}")
+        
+    return detail_data
+
+def extract_detail_amount(driver, document_type: str, document_title: str = '') -> Dict[str, Any]:
+    """
+    팝업 상세 페이지에서 재무 정보를 추출합니다.
+    
+    Args:
+        driver: Selenium WebDriver 인스턴스
+        document_type: 문서 종류 ('매출품의' 또는 '매입품의')
+        document_title: 문서 제목 (카카오클라우드 분기를 위해 필요)
+        
+    Returns:
+        Dict[str, Any]: 추출된 재무 정보 (거래처명, 공급가액, 부가세, 합계금액)
+    """
+    detail_data = {
+        '거래처명': '',
+        '공급가액': 0,
+        '부가세': 0,
+        '합계금액': 0
+    }
+    
+    try:
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
+        
+        # 분기 1: '매입품의'
+        if document_type == '매입품의':
+            logger.info("🔍 매입품의 추출 로직 실행")
+            detail_data = _extract_purchase_details(soup)
+        
+        # 분기 2: '매출품의'
+        elif document_type == '매출품의':
+            logger.info("🔍 매출품의 추출 로직 실행")
+            
+            # Case 2-1: 카카오클라우드
+            if '카카오클라우드' in document_title:
+                logger.info("🔍 카카오클라우드 문서 감지")
+                detail_data = _extract_sales_details_kakao(soup)
+            # Case 2-2: 그 외 (일반 구조)
+            else:
+                logger.info("🔍 일반 매출품의 문서 감지")
+                detail_data = _extract_sales_details_general(soup)
+        
+        # 분기되지 않은 경우
+        else:
+            logger.warning(f"⚠️ 알 수 없는 문서 종류: {document_type}")
+            
+        logger.info(f"✅ 상세 정보 추출 완료: {detail_data}")
         
     except Exception as e:
         logger.error(f"❌ 상세 정보 추출 중 오류: {e}")
@@ -348,17 +511,12 @@ def extract_detail_amount(driver, document_type: str) -> Dict[str, Any]:
     return detail_data
 
 def close_popup(driver):
-    """팝업을 닫습니다. (ESC 키 사용으로 최적화)"""
-    try:
-        logger.info("🚪 팝업 닫기 시도 중...")
-        from selenium.webdriver.common.keys import Keys
-        driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
-        logger.info("✅ ESC 키로 팝업 닫기 성공")
-        time.sleep(1) 
-        return True
-    except Exception as e:
-        logger.warning(f"⚠️ 팝업 닫기 실패: {e}")
-        return False
+    """
+    팝업을 닫습니다.
+    (팝업은 driver.close()로 처리되므로 이 함수는 더 이상 사용되지 않습니다)
+    """
+    logger.info("🚪 팝업 닫기는 윈도우 컨텍스트 전환으로 처리됩니다")
+    return True
 
 def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, Any]]:
     """
@@ -370,7 +528,7 @@ def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, 
     try:
         logger.info("🚀 전체 크롤링 시작")
         
-        keywords = ['매입품의', '매출품의']
+        keywords = ['매출품의', '매입품의']
         
         for keyword in keywords:
             logger.info(f"📋 '{keyword}' 목록 추출 중...")
@@ -422,7 +580,8 @@ def run_full_crawling(driver, start_date: str, end_date: str) -> List[Dict[str, 
                     
                     # --- b. 팝업 내부 정보 추출 (driver는 팝업을 보고 있음) ---
                     doc_type = doc.get('구분', '')
-                    detail_info = extract_detail_amount(driver, doc_type) 
+                    doc_title = doc.get('문서제목', '')
+                    detail_info = extract_detail_amount(driver, doc_type, doc_title) 
                     
                     # --- c. 팝업 닫기 및 통합 ---
                     # 팝업 창 닫기
