@@ -59,38 +59,50 @@ def process_monthly_summary(df: pd.DataFrame) -> pd.DataFrame:
 def create_detailed_sheet(df: pd.DataFrame) -> pd.DataFrame:
     """
     상세 내역 시트용 데이터를 생성합니다.
-    
-    Args:
-        df (pd.DataFrame): 원본 데이터
-        
-    Returns:
-        pd.DataFrame: 상세 내역 데이터 (추가 컬럼 포함)
+    (요청된 모든 상세 정보를 포함하도록 컬럼 순서 지정)
     """
     try:
         logger.info("📋 상세 내역 데이터 생성 중...")
         
         if df.empty:
-            return pd.DataFrame(columns=['날짜', '년월', '문서제목', '구분', '공급가액'])
+            # 필수 컬럼 외에 요청된 모든 컬럼을 포함
+            required_cols = ['기안일', '문서제목', '문서번호', '링크', '구분', '거래처명', '공급가액', '부가세', '합계금액']
+            return pd.DataFrame(columns=required_cols)
         
-        # 상세 데이터 복사 및 추가 컬럼 생성
         detailed_df = df.copy()
-        detailed_df['년월'] = detailed_df['날짜'].dt.to_period('M').astype(str)
-        detailed_df['년도'] = detailed_df['날짜'].dt.year
-        detailed_df['월'] = detailed_df['날짜'].dt.month
+        
+        # '날짜' 컬럼이 '기안일'로 통합되었으므로, '날짜'를 기준으로 년월/년도/월을 생성
+        # NOTE: data_crawler.py에서 '기안일'이 '날짜'로 변경되었으므로, df['날짜']를 사용합니다.
+        
+        # 금액 컬럼이 정수형이 아닐 경우 강제로 변환 (Excel 포맷팅을 위해)
+        for col in ['공급가액', '부가세', '합계금액']:
+             if col in detailed_df.columns:
+                 # 오류가 있는 셀은 NaN으로 처리 후 0으로 채움
+                 detailed_df[col] = pd.to_numeric(detailed_df[col], errors='coerce').fillna(0).astype(int)
+
+        # 요청된 최종 컬럼 순서 지정
+        column_order = [
+            '날짜', '문서제목', '문서번호', '링크', '구분',
+            '거래처명', '공급가액', '부가세', '합계금액'
+        ]
+        
+        # DataFrame에 존재하는 컬럼만 포함
+        final_columns = [col for col in column_order if col in detailed_df.columns]
         
         # 날짜 순으로 정렬
-        detailed_df = detailed_df.sort_values(['날짜', '구분'])
+        detailed_df = detailed_df.sort_values('날짜')
+        detailed_df = detailed_df[final_columns]
         
-        # 컬럼 순서 조정
-        column_order = ['날짜', '년월', '년도', '월', '문서제목', '구분', '공급가액']
-        detailed_df = detailed_df[column_order]
+        # 헤더명을 요청된 이름으로 다시 변경 (예: '날짜' -> '기안일')
+        detailed_df = detailed_df.rename(columns={'날짜': '기안일'})
         
         logger.info(f"✅ 상세 내역 데이터 생성 완료: {len(detailed_df)}건")
         return detailed_df
         
     except Exception as e:
         logger.error(f"❌ 상세 내역 데이터 생성 실패: {e}")
-        return pd.DataFrame(columns=['날짜', '년월', '문서제목', '구분', '공급가액'])
+        required_cols = ['기안일', '문서제목', '문서번호', '링크', '구분', '거래처명', '공급가액', '부가세', '합계금액']
+        return pd.DataFrame(columns=required_cols)
 
 def create_profit_analysis(monthly_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -182,18 +194,18 @@ def export_to_excel(detailed_df: pd.DataFrame, monthly_df: pd.DataFrame, analysi
         number_format = "#,##0"
         currency_format = "#,##0"
         
-        # 1. 월별요약 시트
-        if not monthly_df.empty:
-            ws_monthly = wb.create_sheet("월별요약")
-            add_dataframe_to_sheet(ws_monthly, monthly_df, "월별 매출/매입 현황")
-            format_worksheet(ws_monthly, monthly_df, header_font, header_fill, header_alignment, number_format)
-        
-        # 2. 상세내역 시트
+        # 1. 상세내역 시트
         if not detailed_df.empty:
             ws_detailed = wb.create_sheet("상세내역")
             add_dataframe_to_sheet(ws_detailed, detailed_df, "상세 거래 내역")
             format_worksheet(ws_detailed, detailed_df, header_font, header_fill, header_alignment, number_format)
         
+        # 2. 월별요약 시트
+        if not monthly_df.empty:
+            ws_monthly = wb.create_sheet("월별요약")
+            add_dataframe_to_sheet(ws_monthly, monthly_df, "월별 매출/매입 현황")
+            format_worksheet(ws_monthly, monthly_df, header_font, header_fill, header_alignment, number_format)
+
         # 3. 손익분석 시트
         if not analysis_df.empty:
             ws_analysis = wb.create_sheet("손익분석")

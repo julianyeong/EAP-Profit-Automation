@@ -174,7 +174,7 @@ def navigate_to_handover_document_list(driver):
         
         # 최종 페이지 로딩 대기
         logger.info("⏳ 인수인계문서 목록 페이지 로딩 대기 중...")
-        time.sleep(3)
+        time.sleep(30)
         
         logger.info("✅✅✅ '인수인계문서' 목록 페이지 이동 완료 ✅✅✅")
         return True
@@ -251,7 +251,7 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
         
         try:
             # 10초 대기하여 스크롤 가능한 요소 확보
-            scrollable_element = WebDriverWait(driver, 10).until(
+            scrollable_element = WebDriverWait(driver, 0).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, SCROLL_CONTAINER_CSS))
             )
             logger.info("✅ 스크롤 대상 요소 (style*='overflow: scroll') 찾기 성공")
@@ -333,6 +333,7 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
                 document_data = {
                     '기안일': doc_date.strftime('%Y-%m-%d'),
                     '문서제목': title,
+                    '문서번호': link_href,
                     '링크': link_href, 
                     '구분': doc_type
                 }
@@ -762,7 +763,7 @@ def crawl_all_data(driver, start_date: str, end_date: str) -> pd.DataFrame:
         else:
             # 날짜 정보가 전혀 없는 경우 빈 프레임 반환 (처리 모듈 호환을 위해)
             logger.warning("⚠️ 날짜 컬럼을 찾을 수 없어 빈 데이터프레임을 반환합니다")
-            return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
+            return pd.DataFrame(columns=['날짜', '문서제목', '매입|매출', '공급가액'])
 
         # 구분 표준화: '매출품의'/'매입품의' → '매출'/'매입'
         if '구분' in df.columns:
@@ -774,7 +775,7 @@ def crawl_all_data(driver, start_date: str, end_date: str) -> pd.DataFrame:
 
         # 표시 컬럼 구성 (가능한 경우 추가 컬럼 포함)
         base_columns = ['날짜', '문서제목', '구분', '공급가액']
-        extra_columns = [c for c in ['거래처명', '부가세', '합계금액', '링크'] if c in df.columns]
+        extra_columns = [c for c in ['거래처명', '부가세', '합계금액', '문서번호'] if c in df.columns]
         df = df[base_columns + extra_columns]
 
         # 정렬 및 완료 로그
