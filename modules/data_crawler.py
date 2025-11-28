@@ -315,7 +315,10 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
 
                 link_text_element = info_links[1] 
                 link_href = link_text_element.get_text(strip=True) # 품의번호 텍스트
+                # 기안부서 추출 (문서번호에서 '-' 앞부분만)
+                dept = link_href.split('-', 1)[0].strip() if '-' in link_href else ''
 
+                
                 # 3. 기안일, 상태 확인 및 필터링 (생략된 로직)
                 date_text = row.select_one('.dateText').get_text(strip=True)
                 status = row.select_one('.process .ellipsis2').get_text(strip=True)
@@ -333,9 +336,11 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
                 document_data = {
                     '기안일': doc_date.strftime('%Y-%m-%d'),
                     '문서제목': title,
+                    '기안부서': dept,
                     '문서번호': link_href,
                     '링크': link_href, 
-                    '구분': doc_type
+                    '구분': doc_type,
+                    '종결|완료' :  status
                 }
                 
                 documents.append(document_data)
@@ -354,8 +359,7 @@ def extract_document_list(driver, start_date: str, end_date: str, doc_keyword: s
 
 def _extract_purchase_details(soup: BeautifulSoup) -> Dict[str, Any]:
     """
-    매입품의 상세 페이지에서 재무 정보를 추출합니다.
-    (배경색 스타일 속성을 가진 <td> 셀을 직접 탐색)
+    매입품의 상세 페이지에서 '노란 배경 합계 영역' 금액 추출
     """
     detail_data = {
         '거래처명': '',
@@ -365,22 +369,26 @@ def _extract_purchase_details(soup: BeautifulSoup) -> Dict[str, Any]:
     }
     
     try:
-        target_style = 'background:rgb(255, 241, 214)'
+        # ✅ 배경색을 완벽히 일치 비교하지 않고, "포함" 여부로 검사
         sum_cells = soup.find_all(['td', 'th'], 
-                                  style=lambda s: s and target_style in s)
-        
+            style=lambda s: s and ('255, 241, 214' in s or 'FFF1D6' in s)
+        )
+
         if len(sum_cells) < 3:
-            logger.warning("⚠️ 특정 배경색 스타일을 가진 셀을 충분히 찾을 수 없습니다. (최소 3개 필요)")
+            logger.warning("⚠️ 노란 배경 합계 영역을 충분히 찾을 수 없습니다.")
             return detail_data
 
-        # 💡 추출 목표: 합계금액, 부가세, 공급가액 (뒤에서 -1, -2, -3 인덱스)
-        detail_data['합계금액'] = _clean_amount(sum_cells[-1].get_text(strip=True))
-        detail_data['부가세'] = _clean_amount(sum_cells[-2].get_text(strip=True))
-        detail_data['공급가액'] = _clean_amount(sum_cells[-3].get_text(strip=True))
-        logger.info("✅ 매입품의 스타일 속성 기반 금액 추출 성공")
-        
+        # ✅ 뒤에서부터 3개가 '공급가액 / 부가세 / 합계금액'
+        clean = lambda x: _clean_amount(x.get_text(strip=True))
+
+        detail_data['합계금액'] = clean(sum_cells[-1])
+        detail_data['부가세'] = clean(sum_cells[-2])
+        detail_data['공급가액'] = clean(sum_cells[-3])
+
+        logger.info("✅ 매입 합계 금액 추출 성공")
+
     except Exception as e:
-        logger.error(f"❌ 매입품의 상세 정보 추출 중 오류: {e}")
+        logger.error(f"❌ 매입 합계 데이터 추출 오류: {e}")
         
     return detail_data
 
@@ -750,7 +758,7 @@ def crawl_all_data(driver, start_date: str, end_date: str) -> pd.DataFrame:
 
         if not all_data:
             logger.warning("⚠️ 추출된 데이터가 없습니다")
-            return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
+            return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액', '종결|완료'])
 
         # DataFrame 생성 및 표준 컬럼 정리
         df = pd.DataFrame(all_data)
@@ -763,7 +771,7 @@ def crawl_all_data(driver, start_date: str, end_date: str) -> pd.DataFrame:
         else:
             # 날짜 정보가 전혀 없는 경우 빈 프레임 반환 (처리 모듈 호환을 위해)
             logger.warning("⚠️ 날짜 컬럼을 찾을 수 없어 빈 데이터프레임을 반환합니다")
-            return pd.DataFrame(columns=['날짜', '문서제목', '매입|매출', '공급가액'])
+            return pd.DataFrame(columns=['날짜', '문서제목', '매입|매출', '공급가액', '종결|완료'])
 
         # 구분 표준화: '매출품의'/'매입품의' → '매출'/'매입'
         if '구분' in df.columns:
@@ -775,7 +783,7 @@ def crawl_all_data(driver, start_date: str, end_date: str) -> pd.DataFrame:
 
         # 표시 컬럼 구성 (가능한 경우 추가 컬럼 포함)
         base_columns = ['날짜', '문서제목', '구분', '공급가액']
-        extra_columns = [c for c in ['거래처명', '부가세', '합계금액', '문서번호'] if c in df.columns]
+        extra_columns = [c for c in ['거래처명', '부가세', '합계금액', '문서번호', '종결|완료'] if c in df.columns]
         df = df[base_columns + extra_columns]
 
         # 정렬 및 완료 로그
@@ -786,5 +794,5 @@ def crawl_all_data(driver, start_date: str, end_date: str) -> pd.DataFrame:
         
     except Exception as e:
         logger.error(f"❌ 데이터 크롤링 중 오류: {e}")
-        return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액'])
+        return pd.DataFrame(columns=['날짜', '문서제목', '구분', '공급가액', '종결|완료'])
 
