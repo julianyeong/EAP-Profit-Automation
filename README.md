@@ -5,9 +5,8 @@ Amaranth 그룹웨어에서 종결된 매출 및 매입 품의서 데이터를 �
 ## 🎯 주요 기능
 
 - **자동 데이터 추출**: 그룹웨어에서 종결된 매출/매입 품의서 자동 수집
-- **월별 손익 분석**: 매출액, 매입액, 손익을 월별로 집계 및 분석
-- **Excel 보고서 생성**: 3개 시트로 구성된 상세한 분석 보고서
-- **유연한 날짜 범위**: 최근 12개월 자동 또는 사용자 지정 기간
+- **월별 손익 분석**: 매출액, 매입액, 손익을 지정 기간 별 집계 및 분석
+- **유연한 날짜 범위**: 사용자 지정 기간
 
 ## 📋 시스템 요구사항
 
@@ -53,18 +52,6 @@ GROUPWARE_PW=your_password
 
 ```bash
 python main.py
-```
-
-### 수동 날짜 범위 지정
-
-```bash
-python main.py --mode manual --start-date 2024-01-01 --end-date 2024-12-31
-```
-
-### 명령행 인수로 인증 정보 제공
-
-```bash
-python main.py --url https://groupware.example.com --id username --pw password
 ```
 
 ### 전체 옵션
